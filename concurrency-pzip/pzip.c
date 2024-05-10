@@ -108,7 +108,14 @@ int main(int argc, char *argv[]) {
         fseek(file, 0, SEEK_SET);
 
         char *data = malloc(file_size * sizeof(char));
-        fread(data, sizeof(char), file_size, file);
+
+        size_t bytes_read = fread(data, sizeof(char), file_size, file);
+        if (bytes_read != file_size) {
+            fprintf(stderr, "Error reading file: %s\n", argv[i]);
+            free(data);
+            exit(1);
+        }
+
         fclose(file);
 
         thread_data.chunks[i - 1].data = data;

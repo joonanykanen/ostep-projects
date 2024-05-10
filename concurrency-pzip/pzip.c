@@ -80,7 +80,7 @@ void *compress_chunk(void *arg) {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "pzip: %s file1 [file2 ...]\n", argv[0]);
+        fprintf(stderr, "pzip: file1 [file2 ...]\n");
         exit(1);
     }
 

@@ -25,9 +25,6 @@ int current_chunk = 0;
 // Function executed by each thread to compress a chunk of data
 void *compress_chunk(void *arg) {
     thread_data_t *thread_data = (thread_data_t *)arg;
-    chunk_t *compressed_chunks = malloc(thread_data->num_chunks * sizeof(chunk_t));
-    int compressed_chunk_index = 0;
-
     while (1) {
         // Acquire a mutex lock to ensure thread safety when accessing shared data
         pthread_mutex_lock(&mutex);
@@ -40,41 +37,28 @@ void *compress_chunk(void *arg) {
 
         // Get the chunk of data to compress
         chunk_t chunk = thread_data->chunks[chunk_index];
-        size_t compressed_size = 0;
-        char *compressed_data = malloc(chunk.size * sizeof(char));
 
-        char prev_char = chunk.data[0];
-        int count = 1;
+        if (chunk.size > 0) {
+            char prev_char = chunk.data[0];
+            int count = 1;
 
-        // Compress the chunk using RLE
-        for (size_t i = 1; i <= chunk.size; i++) {
-            if (i < chunk.size && chunk.data[i] == prev_char) {
-                count++;
-            } else {
-                fwrite(&count, sizeof(int), 1, stdout);
-                fwrite(&prev_char, sizeof(char), 1, stdout);
-                compressed_size += sizeof(int) + sizeof(char);
+            // Compress the chunk using RLE
+            for (size_t i = 1; i < chunk.size; i++) {
+                if (chunk.data[i] == prev_char) {
+                    count++;
+                } else {
+                    fwrite(&count, sizeof(int), 1, stdout);
+                    fwrite(&prev_char, sizeof(char), 1, stdout);
 
-                if (i < chunk.size) {
                     prev_char = chunk.data[i];
                     count = 1;
                 }
             }
+            // Handle the last sequence
+            fwrite(&count, sizeof(int), 1, stdout);
+            fwrite(&prev_char, sizeof(char), 1, stdout);
         }
-
-        // Store the compressed chunk in the thread-local buffer
-        compressed_chunks[compressed_chunk_index].data = compressed_data;
-        compressed_chunks[compressed_chunk_index].size = compressed_size;
-        compressed_chunk_index++;
     }
-
-    // Write the compressed chunks to the output file in the correct order
-    for (int i = 0; i < compressed_chunk_index; i++) {
-        fwrite(compressed_chunks[i].data, sizeof(char), compressed_chunks[i].size, stdout);
-        free(compressed_chunks[i].data);
-    }
-
-    free(compressed_chunks);
     return NULL;
 }
 

@@ -7,57 +7,76 @@
 
 #define MAX_THREADS 16
 
-// Structure to represent a chunk of data
 typedef struct {
-    char *data;
+    char* data;
     size_t size;
 } chunk_t;
 
-// Structure to hold the chunks of data for each thread
 typedef struct {
     chunk_t *chunks;
     int num_chunks;
+    char **output;   // Storage for output from each thread
+    size_t *lengths; // Length of each thread's output
+    int thread_count;
 } thread_data_t;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 int current_chunk = 0;
 
-// Function executed by each thread to compress a chunk of data
+void compress_and_store(chunk_t chunk, char **buffer, size_t *length) {
+    size_t buffer_size = chunk.size * 2;
+    *buffer = malloc(buffer_size); // Allocate initial buffer
+    *length = 0;
+
+    if (chunk.size == 0) return; // Return early if chunk is empty
+
+    char prev_char = chunk.data[0];
+    int count = 1;
+
+    for (size_t i = 1; i < chunk.size; i++) {
+        if (chunk.data[i] == prev_char) {
+            count++;
+        } else {
+            if (*length + sizeof(int) + sizeof(char) > buffer_size) {
+                buffer_size *= 2;
+                *buffer = realloc(*buffer, buffer_size); // Resize buffer as needed
+            }
+            memcpy(*buffer + *length, &count, sizeof(int));
+            *length += sizeof(int);
+            memcpy(*buffer + *length, &prev_char, sizeof(char));
+            *length += sizeof(char);
+
+            prev_char = chunk.data[i];
+            count = 1;
+        }
+    }
+    if (*length + sizeof(int) + sizeof(char) > buffer_size) {
+        buffer_size += sizeof(int) + sizeof(char);
+        *buffer = realloc(*buffer, buffer_size); // Final resize for the last sequence
+    }
+    memcpy(*buffer + *length, &count, sizeof(int));
+    *length += sizeof(int);
+    memcpy(*buffer + *length, &prev_char, sizeof(char));
+    *length += sizeof(char);
+}
+
 void *compress_chunk(void *arg) {
     thread_data_t *thread_data = (thread_data_t *)arg;
+    int local_chunk;
+
     while (1) {
-        // Acquire a mutex lock to ensure thread safety when accessing shared data
         pthread_mutex_lock(&mutex);
+        local_chunk = current_chunk;
         if (current_chunk >= thread_data->num_chunks) {
             pthread_mutex_unlock(&mutex);
             break;
         }
-        int chunk_index = current_chunk++;
+        current_chunk++;
         pthread_mutex_unlock(&mutex);
 
-        // Get the chunk of data to compress
-        chunk_t chunk = thread_data->chunks[chunk_index];
-
-        if (chunk.size > 0) {
-            char prev_char = chunk.data[0];
-            int count = 1;
-
-            // Compress the chunk using RLE
-            for (size_t i = 1; i < chunk.size; i++) {
-                if (chunk.data[i] == prev_char) {
-                    count++;
-                } else {
-                    fwrite(&count, sizeof(int), 1, stdout);
-                    fwrite(&prev_char, sizeof(char), 1, stdout);
-
-                    prev_char = chunk.data[i];
-                    count = 1;
-                }
-            }
-            // Handle the last sequence
-            fwrite(&count, sizeof(int), 1, stdout);
-            fwrite(&prev_char, sizeof(char), 1, stdout);
-        }
+        compress_and_store(thread_data->chunks[local_chunk],
+                           &thread_data->output[local_chunk],
+                           &thread_data->lengths[local_chunk]);
     }
     return NULL;
 }
@@ -68,21 +87,21 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    // Determine the number of threads to create based on the number of CPU resources
     int num_threads = get_nprocs();
     if (num_threads > MAX_THREADS) {
         num_threads = MAX_THREADS;
     }
 
-    // Initialize the thread data structure
     thread_data_t thread_data;
     thread_data.num_chunks = argc - 1;
     thread_data.chunks = malloc(thread_data.num_chunks * sizeof(chunk_t));
+    thread_data.output = calloc(thread_data.num_chunks, sizeof(char*));
+    thread_data.lengths = calloc(thread_data.num_chunks, sizeof(size_t));
+    thread_data.thread_count = num_threads;
 
-    // Read the contents of each input file into memory
     for (int i = 1; i < argc; i++) {
         FILE *file = fopen(argv[i], "r");
-        if (file == NULL) {
+        if (!file) {
             fprintf(stderr, "Error opening file: %s\n", argv[i]);
             exit(1);
         }
@@ -91,37 +110,48 @@ int main(int argc, char *argv[]) {
         size_t file_size = ftell(file);
         fseek(file, 0, SEEK_SET);
 
-        char *data = malloc(file_size * sizeof(char));
-
-        size_t bytes_read = fread(data, sizeof(char), file_size, file);
-        if (bytes_read != file_size) {
-            fprintf(stderr, "Error reading file: %s\n", argv[i]);
-            free(data);
+        char *data = malloc(file_size);
+        if (data == NULL) {
+            fprintf(stderr, "Error allocating memory\n");
+            fclose(file); // Always remember to close the file
             exit(1);
         }
 
+        size_t bytes_read = fread(data, 1, file_size, file);
+        if (bytes_read != file_size) {
+            fprintf(stderr, "Error reading file: %s\n", argv[i]);
+            free(data);
+            fclose(file);
+            exit(1);
+        }
         fclose(file);
 
         thread_data.chunks[i - 1].data = data;
         thread_data.chunks[i - 1].size = file_size;
     }
 
-    // Create the threads and pass the thread data to each thread
-    pthread_t threads[num_threads];
+    pthread_t threads[MAX_THREADS];
     for (int i = 0; i < num_threads; i++) {
         pthread_create(&threads[i], NULL, compress_chunk, &thread_data);
     }
 
-    // Wait for all threads to finish
     for (int i = 0; i < num_threads; i++) {
         pthread_join(threads[i], NULL);
     }
 
-    // Free the allocated memory
+    // Sequentially write all compressed data to stdout
+    for (int i = 0; i < thread_data.num_chunks; i++) {
+        fwrite(thread_data.output[i], 1, thread_data.lengths[i], stdout);
+        free(thread_data.output[i]);
+    }
+
+    // Cleanup all allocated memory
     for (int i = 0; i < thread_data.num_chunks; i++) {
         free(thread_data.chunks[i].data);
     }
     free(thread_data.chunks);
+    free(thread_data.output);
+    free(thread_data.lengths);
 
     return 0;
 }
